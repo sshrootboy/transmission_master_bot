@@ -47,9 +47,13 @@ dp = Dispatcher(storage=storage)
 # FSM States для управления диалогом
 class TorrentStates(StatesGroup):
     waiting_for_category = State()
+    selecting_torrent_to_delete = State()
+    confirming_deletion = State()
 
-# Временное хранилище для magnet-ссылок
+# Временное хранилище для magnet-ссылок и выбранных торрентов
 user_magnets = {}
+user_selected_torrents = {}
+delete_page = {}
 
 # Подключение к Transmission
 def get_transmission_client():
@@ -93,6 +97,35 @@ def get_status_emoji(status: str) -> str:
     }
     return status_map.get(status.lower(), EMOJI_PAUSED)
 
+# Приоритет статусов для сортировки
+def get_status_priority(torrent) -> tuple:
+    """Определение приоритета статуса для сортировки"""
+    status = torrent.status.lower()
+
+    # Проверяем есть ли ошибки
+    has_error = torrent.error != 0 or (hasattr(torrent, 'error_string') and torrent.error_string)
+
+    if status == "downloading" or status == "download pending":
+        priority = 1
+    elif has_error:
+        priority = 2
+    elif status == "seeding" or status == "seed pending":
+        priority = 3
+    else:
+        priority = 4
+
+    # Сортируем по приоритету, потом по ID (обратный порядок - новые сверху)
+    return (priority, -torrent.id)
+
+# Сортировка торрентов
+def sort_torrents(torrents):
+
+    try:
+        return sorted(torrents, key=get_status_priority)
+    except Exception as e:
+        print(f"Ошибка при сортировке торрентов: {e}")
+        return torrents
+
 # Создание главной клавиатуры с кнопками
 def get_main_keyboard():
     """Главное меню с кнопками"""
@@ -103,6 +136,7 @@ def get_main_keyboard():
                 KeyboardButton(text="📊 Статус")
             ],
             [
+                KeyboardButton(text="🗑 Удалить торрент"),
                 KeyboardButton(text="❓ Помощь")
             ]
         ],
@@ -116,12 +150,10 @@ def get_category_keyboard():
     """Клавиатура для выбора категории загрузки"""
     buttons = []
 
-    # Группируем кнопки по 2 в ряд
     for i in range(0, len(DOWNLOAD_CATEGORIES), 2):
         row = []
         for j in range(i, min(i + 2, len(DOWNLOAD_CATEGORIES))):
             category = DOWNLOAD_CATEGORIES[j].strip()
-            # Добавляем emoji для категорий
             emoji = {
                 "Movies": "🎬",
                 "Series": "📺",
@@ -135,10 +167,84 @@ def get_category_keyboard():
             ))
         buttons.append(row)
 
-    # Добавляем кнопку отмены
     buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    return keyboard
+
+# Создание клавиатуры со списком торрентов для удаления
+def get_torrents_keyboard(page=0, per_page=9):
+    """Клавиатура со списком торрентов для удаления (по 9 штук)"""
+    try:
+        torrents = client.get_torrents()
+        torrents = sort_torrents(torrents)
+
+        start_idx = page * per_page
+        end_idx = start_idx + per_page
+        page_torrents = torrents[start_idx:end_idx]
+
+        buttons = []
+
+        for torrent in page_torrents:
+            # Ограничиваем длину названия
+            name = torrent.name[:40] + "..." if len(torrent.name) > 40 else torrent.name
+            emoji = get_status_emoji(torrent.status)
+
+            buttons.append([InlineKeyboardButton(
+                text=f"{emoji} {name}",
+                callback_data=f"delete_select_{torrent.id}"
+            )])
+
+        # Навигация
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data=f"delete_page_{page-1}"
+            ))
+
+        if end_idx < len(torrents):
+            nav_buttons.append(InlineKeyboardButton(
+                text="➡️ Далее",
+                callback_data=f"delete_page_{page+1}"
+            ))
+
+        if nav_buttons:
+            buttons.append(nav_buttons)
+
+        # Кнопка отмены
+        buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")])
+
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        return keyboard, len(torrents)
+
+    except Exception as e:
+        print(f"Ошибка при получении списка торрентов: {e}")
+        return None, 0
+
+# Клавиатура подтверждения удаления
+def get_delete_confirmation_keyboard(torrent_id):
+    """Клавиатура для подтверждения удаления"""
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="🗑 Удалить с файлами",
+                callback_data=f"confirm_delete_with_files_{torrent_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📋 Удалить без файлов",
+                callback_data=f"confirm_delete_no_files_{torrent_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="❌ Отмена",
+                callback_data="cancel_delete"
+            )
+        ]
+    ])
     return keyboard
 
 @dp.message(Command("start"))
@@ -155,6 +261,7 @@ async def cmd_start(message: Message):
         "*Доступные команды:*\n"
         "📋 Список торрентов\n"
         "📊 Статус системы\n"
+        "🗑 Удалить торрент\n"
         "❓ Помощь"
     )
 
@@ -174,8 +281,12 @@ async def cmd_help(message: Message):
         "2️⃣ Выберите категорию (Movies, Series, Music, Other)\n"
         "3️⃣ Торрент начнет загружаться\n\n"
         "*Управление:*\n"
-        "📋 *Список торрентов* - показать активные загрузки\n"
-        "📊 *Статус* - информация о системе\n\n"
+        "📋 *Список торрентов* - отсортированный список\n"
+        "   • Сначала загружающиеся\n"
+        "   • Затем с ошибками\n"
+        "   • Потом готовые\n"
+        "📊 *Статус* - информация о системе\n"
+        "🗑 *Удалить торрент* - выбор торрента для удаления\n\n"
         "*Уведомления:*\n"
         "🔔 Получите уведомление когда загрузка завершится"
     )
@@ -185,7 +296,7 @@ async def cmd_help(message: Message):
 @dp.message(Command("list"))
 @dp.message(F.text == "📋 Список торрентов")
 async def cmd_list(message: Message):
-    """Команда /list - показать список торрентов"""
+    """Команда /list - показать список торрентов с сортировкой"""
     if not check_access(message.from_user.id):
         return
 
@@ -197,22 +308,32 @@ async def cmd_list(message: Message):
             await message.answer(empty_message, reply_markup=get_main_keyboard())
             return
 
+        # Сортируем торренты
+        sorted_torrents = sort_torrents(torrents)
+
         list_header = "📋 *Активные торренты:*\n\n"
+        # list_header += "_Сортировка: загружающиеся → ошибки → готовые_\n\n"
         response = list_header
 
-        for torrent in torrents[:MAX_TORRENTS_DISPLAY]:
+        for torrent in sorted_torrents[:MAX_TORRENTS_DISPLAY]:
             progress = torrent.progress
             status = get_status_emoji(torrent.status)
             size = format_size(torrent.total_size)
 
             # Экранируем специальные символы для Markdown
-            name = torrent.name.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[')
+            name = torrent.name.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
+            name = name[:50] + '...' if len(name) > 50 else name
 
-            response += f"{status} `{name[:50]}{'...' if len(name) > 50 else ''}`\n"
-            response += f"   📊 Прогресс: *{progress:.1f}%* | 📦 Размер: *{size}*\n\n"
+            # Показываем ошибку если есть
+            error_text = ""
+            if hasattr(torrent, 'error_string') and torrent.error_string:
+                error_text = f"\n   ⚠️ Ошибка: {torrent.error_string}"
 
-        if len(torrents) > MAX_TORRENTS_DISPLAY:
-            response += f"\n_... и еще {len(torrents) - MAX_TORRENTS_DISPLAY} торрентов_"
+            response += f"{status} `{name}`\n"
+            response += f"   📊 Прогресс: *{progress:.1f}%* | 📦 Размер: *{size}*{error_text}\n\n"
+
+        if len(sorted_torrents) > MAX_TORRENTS_DISPLAY:
+            response += f"\n_... и еще {len(sorted_torrents) - MAX_TORRENTS_DISPLAY} торрентов_"
 
         await message.answer(response, reply_markup=get_main_keyboard(), parse_mode="Markdown")
     except Exception as e:
@@ -232,6 +353,7 @@ async def cmd_status(message: Message):
         active = sum(1 for t in torrents if t.status == "downloading")
         seeding = sum(1 for t in torrents if t.status == "seeding")
         paused = sum(1 for t in torrents if t.status == "stopped")
+        errors = sum(1 for t in torrents if t.error != 0)
         total = len(torrents)
 
         download_speed = sum(t.rate_download for t in torrents)
@@ -242,6 +364,12 @@ async def cmd_status(message: Message):
             f"🔄 Загружается: *{active}*\n"
             f"✅ Раздается: *{seeding}*\n"
             f"⏸️ Остановлено: *{paused}*\n"
+        )
+
+        if errors > 0:
+            response += f"❌ С ошибками: *{errors}*\n"
+
+        response += (
             f"📦 Всего: *{total}*\n\n"
             f"⬇️ Скорость загрузки: *{format_size(download_speed)}/s*\n"
             f"⬆️ Скорость отдачи: *{format_size(upload_speed)}/s*\n\n"
@@ -252,6 +380,143 @@ async def cmd_status(message: Message):
     except Exception as e:
         await message.answer(f"{EMOJI_ERROR} Ошибка: {str(e)}", reply_markup=get_main_keyboard())
 
+@dp.message(F.text == "🗑 Удалить торрент")
+async def cmd_delete(message: Message, state: FSMContext):
+    """Команда удаления торрента - показать список"""
+    if not check_access(message.from_user.id):
+        return
+
+    # Инициализируем страницу
+    delete_page[message.from_user.id] = 0
+
+    keyboard, total = get_torrents_keyboard(page=0)
+
+    if keyboard is None or total == 0:
+        await message.answer("📭 Список торрентов пуст", reply_markup=get_main_keyboard())
+        return
+
+    await message.answer(
+        f"🗑 *Выберите торрент для удаления:*\n_Всего торрентов: {total}_",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+    await state.set_state(TorrentStates.selecting_torrent_to_delete)
+
+@dp.callback_query(F.data.startswith("delete_page_"))
+async def handle_delete_page(callback: CallbackQuery, state: FSMContext):
+    """Обработка пагинации списка торрентов"""
+    if not check_access(callback.from_user.id):
+        return
+
+    try:
+        page = int(callback.data.replace("delete_page_", ""))
+        delete_page[callback.from_user.id] = page
+
+        keyboard, total = get_torrents_keyboard(page=page)
+
+        if keyboard is None:
+            await callback.answer("❌ Ошибка загрузки списка")
+            return
+
+        await callback.message.edit_text(
+            f"🗑 *Выберите торрент для удаления:*\n_Страница {page + 1}, всего торрентов: {total}_",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+
+        await callback.answer()
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка: {str(e)}", show_alert=True)
+
+@dp.callback_query(F.data.startswith("delete_select_"))
+async def handle_delete_select(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора торрента для удаления"""
+    if not check_access(callback.from_user.id):
+        return
+
+    try:
+        torrent_id = int(callback.data.replace("delete_select_", ""))
+
+        torrent = client.get_torrent(torrent_id)
+
+        # Сохраняем выбранный торрент
+        user_selected_torrents[callback.from_user.id] = torrent_id
+
+        name = torrent.name
+        size = format_size(torrent.total_size)
+        progress = torrent.progress
+
+        confirmation_text = (
+            f"🗑 *Удаление торрента:*\n\n"
+            f"📝 `{name}`\n"
+            f"📦 Размер: *{size}*\n"
+            f"📊 Прогресс: *{progress:.1f}%*\n\n"
+            f"Выберите способ удаления:"
+        )
+
+        await callback.message.edit_text(
+            confirmation_text,
+            reply_markup=get_delete_confirmation_keyboard(torrent_id),
+            parse_mode="Markdown"
+        )
+
+        await state.set_state(TorrentStates.confirming_deletion)
+        await callback.answer()
+
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка: {str(e)}", show_alert=True)
+
+@dp.callback_query(F.data.startswith("confirm_delete_"))
+async def handle_delete_confirm(callback: CallbackQuery, state: FSMContext):
+    """Обработка подтверждения удаления"""
+    if not check_access(callback.from_user.id):
+        return
+
+    try:
+        parts = callback.data.split("_")
+        delete_files = parts[2] == "with"
+        torrent_id = int(parts[-1])
+
+        torrent = client.get_torrent(torrent_id)
+        name = torrent.name
+
+        # Удаляем торрент
+        client.remove_torrent(torrent_id, delete_data=delete_files)
+
+        # Удаляем из кеша
+        if callback.from_user.id in user_selected_torrents:
+            del user_selected_torrents[callback.from_user.id]
+
+        action = "с файлами" if delete_files else "без файлов"
+        success_text = (
+            f"✅ *Торрент удален {action}*\n\n"
+            f"📝 `{name}`"
+        )
+
+        await callback.message.edit_text(success_text, parse_mode="Markdown")
+        await callback.message.answer("Что дальше?", reply_markup=get_main_keyboard())
+        await callback.answer(f"✅ Удалено {action}")
+
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка: {str(e)}", show_alert=True)
+
+    await state.clear()
+
+@dp.callback_query(F.data == "cancel_delete")
+async def handle_cancel_delete(callback: CallbackQuery, state: FSMContext):
+    """Отмена удаления"""
+    if not check_access(callback.from_user.id):
+        return
+
+    if callback.from_user.id in user_selected_torrents:
+        del user_selected_torrents[callback.from_user.id]
+
+    await callback.message.edit_text("❌ Удаление отменено")
+    await callback.message.answer("Что дальше?", reply_markup=get_main_keyboard())
+    await callback.answer("Отменено")
+    await state.clear()
+
 @dp.message(F.text.startswith("magnet:"))
 async def handle_magnet(message: Message, state: FSMContext):
     """Обработка magnet-ссылок"""
@@ -259,18 +524,14 @@ async def handle_magnet(message: Message, state: FSMContext):
         return
 
     magnet_link = message.text.strip()
-
-    # Сохраняем magnet-ссылку для пользователя
     user_magnets[message.from_user.id] = magnet_link
 
-    # Отправляем клавиатуру для выбора категории
     await message.answer(
         "📂 *Выберите категорию для загрузки:*",
         reply_markup=get_category_keyboard(),
         parse_mode="Markdown"
     )
 
-    # Устанавливаем состояние ожидания выбора категории
     await state.set_state(TorrentStates.waiting_for_category)
 
 @dp.callback_query(F.data.startswith("category_"))
@@ -280,30 +541,22 @@ async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
         await callback.answer("⛔ У вас нет доступа")
         return
 
-    # Получаем выбранную категорию
-    category = callback.data.replace("category_", "")
-
-    # Получаем сохраненную magnet-ссылку
-    magnet_link = user_magnets.get(callback.from_user.id)
-
-    if not magnet_link:
-        await callback.answer("❌ Ошибка: magnet-ссылка не найдена")
-        await callback.message.edit_text("❌ Ошибка: попробуйте отправить magnet-ссылку заново")
-        await state.clear()
-        return
-
     try:
-        # Получаем базовую папку загрузок
+        category = callback.data.replace("category_", "")
+        magnet_link = user_magnets.get(callback.from_user.id)
+
+        if not magnet_link:
+            await callback.answer("❌ Ошибка: magnet-ссылка не найдена")
+            await callback.message.edit_text("❌ Ошибка: попробуйте отправить magnet-ссылку заново")
+            await state.clear()
+            return
+
         session = client.get_session()
         base_download_dir = session.download_dir
-
-        # Формируем путь с подпапкой
         download_path = f"{base_download_dir}/{category}"
 
-        # Добавляем торрент с указанием папки
         torrent = client.add_torrent(magnet_link, download_dir=download_path)
 
-        # Удаляем сохраненную ссылку
         del user_magnets[callback.from_user.id]
 
         emoji = {
@@ -321,19 +574,14 @@ async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
             f"📁 Папка: `{download_path}`"
         )
 
-        # Удаляем сообщение с кнопками
         await callback.message.edit_text(success_message, parse_mode="Markdown")
-
-        # Отправляем новое сообщение с главным меню
         await callback.message.answer("Что дальше?", reply_markup=get_main_keyboard())
-
         await callback.answer("✅ Торрент добавлен!")
 
     except Exception as e:
         await callback.message.edit_text(f"{EMOJI_ERROR} Ошибка при добавлении торрента: {str(e)}")
         await callback.answer("❌ Ошибка")
 
-    # Очищаем состояние
     await state.clear()
 
 @dp.callback_query(F.data == "cancel")
@@ -342,7 +590,6 @@ async def handle_cancel(callback: CallbackQuery, state: FSMContext):
     if not check_access(callback.from_user.id):
         return
 
-    # Удаляем сохраненную ссылку
     if callback.from_user.id in user_magnets:
         del user_magnets[callback.from_user.id]
 
