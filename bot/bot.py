@@ -1,6 +1,6 @@
 import asyncio
 import os
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -119,7 +119,7 @@ def get_status_priority(torrent) -> tuple:
 
 # Сортировка торрентов
 def sort_torrents(torrents):
-
+    """Сортировка: загружающиеся -> с ошибками -> готовые -> остальные"""
     try:
         return sorted(torrents, key=get_status_priority)
     except Exception as e:
@@ -255,7 +255,7 @@ async def cmd_start(message: Message):
         return
 
     welcome_text = (
-        "🤖 *Бот для управления Transmission*\n\n"
+        "🤖 *Transmission Master Bot*\n\n"
         "📥 Отправьте magnet-ссылку для добавления торрента\n"
         "📋 Используйте кнопки ниже для управления\n\n"
         "*Доступные команды:*\n"
@@ -275,7 +275,7 @@ async def cmd_help(message: Message):
         return
 
     help_text = (
-        "📖 *Руководство по использованию*\n\n"
+        "📖 *Transmission Master Bot - Руководство*\n\n"
         "*Добавление торрента:*\n"
         "1️⃣ Отправьте magnet-ссылку\n"
         "2️⃣ Выберите категорию (Movies, Series, Music, Other)\n"
@@ -312,7 +312,6 @@ async def cmd_list(message: Message):
         sorted_torrents = sort_torrents(torrents)
 
         list_header = "📋 *Активные торренты:*\n\n"
-        # list_header += "_Сортировка: загружающиеся → ошибки → готовые_\n\n"
         response = list_header
 
         for torrent in sorted_torrents[:MAX_TORRENTS_DISPLAY]:
@@ -360,7 +359,7 @@ async def cmd_status(message: Message):
         upload_speed = sum(t.rate_upload for t in torrents)
 
         response = (
-            "📊 *Статус системы:*\n\n"
+            "📊 *Transmission Master Bot - Статус:*\n\n"
             f"🔄 Загружается: *{active}*\n"
             f"✅ Раздается: *{seeding}*\n"
             f"⏸️ Остановлено: *{paused}*\n"
@@ -634,7 +633,7 @@ async def check_completed_torrents():
 
 async def main():
     """Главная функция запуска бота"""
-    print(f"🚀 Запуск бота...")
+    print(f"🚀 Запуск Transmission Master Bot...")
     print(f"📡 Transmission: {TRANSMISSION_HOST}:{TRANSMISSION_PORT}")
     print(f"⏰ Интервал проверки: {CHECK_INTERVAL} сек")
     print(f"👥 Разрешенные пользователи: {ALLOWED_USER_IDS}")
