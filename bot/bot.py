@@ -2,8 +2,10 @@ import asyncio
 import os
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 import transmission_rpc
 from dotenv import load_dotenv
 
@@ -34,10 +36,20 @@ EMOJI_PAUSED = os.getenv("EMOJI_PAUSED", "⏸️")
 EMOJI_ERROR = os.getenv("EMOJI_ERROR", "❌")
 EMOJI_COMPLETED = os.getenv("EMOJI_COMPLETED", "🎉")
 
+# Категории для загрузки
+DOWNLOAD_CATEGORIES = os.getenv("DOWNLOAD_CATEGORIES", "Movies,Series,Music,Other").split(",")
+
 # Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
+
+# FSM States для управления диалогом
+class TorrentStates(StatesGroup):
+    waiting_for_category = State()
+
+# Временное хранилище для magnet-ссылок
+user_magnets = {}
 
 # Подключение к Transmission
 def get_transmission_client():
@@ -45,8 +57,8 @@ def get_transmission_client():
     return transmission_rpc.Client(
         host=TRANSMISSION_HOST,
         port=TRANSMISSION_PORT,
-        username=TRANSMISSION_USER,
-        password=TRANSMISSION_PASS
+        username=TRANSMISSION_USER if TRANSMISSION_USER else None,
+        password=TRANSMISSION_PASS if TRANSMISSION_PASS else None
     )
 
 client = get_transmission_client()
@@ -81,6 +93,54 @@ def get_status_emoji(status: str) -> str:
     }
     return status_map.get(status.lower(), EMOJI_PAUSED)
 
+# Создание главной клавиатуры с кнопками
+def get_main_keyboard():
+    """Главное меню с кнопками"""
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text="📋 Список торрентов"),
+                KeyboardButton(text="📊 Статус")
+            ],
+            [
+                KeyboardButton(text="❓ Помощь")
+            ]
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Отправьте magnet-ссылку или выберите действие"
+    )
+    return keyboard
+
+# Создание inline-клавиатуры для выбора категории
+def get_category_keyboard():
+    """Клавиатура для выбора категории загрузки"""
+    buttons = []
+
+    # Группируем кнопки по 2 в ряд
+    for i in range(0, len(DOWNLOAD_CATEGORIES), 2):
+        row = []
+        for j in range(i, min(i + 2, len(DOWNLOAD_CATEGORIES))):
+            category = DOWNLOAD_CATEGORIES[j].strip()
+            # Добавляем emoji для категорий
+            emoji = {
+                "Movies": "🎬",
+                "Series": "📺",
+                "Music": "🎵",
+                "Other": "📁"
+            }.get(category, "📂")
+
+            row.append(InlineKeyboardButton(
+                text=f"{emoji} {category}",
+                callback_data=f"category_{category}"
+            ))
+        buttons.append(row)
+
+    # Добавляем кнопку отмены
+    buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")])
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    return keyboard
+
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     """Команда /start"""
@@ -88,36 +148,42 @@ async def cmd_start(message: Message):
         await message.answer("⛔ У вас нет доступа к этому боту.")
         return
 
-    welcome_text = os.getenv(
-        "WELCOME_MESSAGE",
-        "🤖 Бот для управления Transmission\n\n"
+    welcome_text = (
+        "🤖 *Бот для управления Transmission*\n\n"
         "📥 Отправьте magnet-ссылку для добавления торрента\n"
-        "/list - показать список торрентов\n"
-        "/status - показать статус системы\n"
-        "/help - показать все команды"
-    ).replace("\\n", "\n")
+        "📋 Используйте кнопки ниже для управления\n\n"
+        "*Доступные команды:*\n"
+        "📋 Список торрентов\n"
+        "📊 Статус системы\n"
+        "❓ Помощь"
+    )
 
-    await message.answer(welcome_text)
+    await message.answer(welcome_text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
 
 @dp.message(Command("help"))
+@dp.message(F.text == "❓ Помощь")
 async def cmd_help(message: Message):
     """Команда /help"""
     if not check_access(message.from_user.id):
         return
 
-    help_text = os.getenv(
-        "HELP_MESSAGE",
-        "📖 Доступные команды:\n\n"
-        "/start - приветствие\n"
-        "/list - список активных торрентов\n"
-        "/status - статус системы\n"
-        "/help - это сообщение\n\n"
-        "Просто отправьте magnet-ссылку для добавления торрента!"
-    ).replace("\\n", "\n")
+    help_text = (
+        "📖 *Руководство по использованию*\n\n"
+        "*Добавление торрента:*\n"
+        "1️⃣ Отправьте magnet-ссылку\n"
+        "2️⃣ Выберите категорию (Movies, Series, Music, Other)\n"
+        "3️⃣ Торрент начнет загружаться\n\n"
+        "*Управление:*\n"
+        "📋 *Список торрентов* - показать активные загрузки\n"
+        "📊 *Статус* - информация о системе\n\n"
+        "*Уведомления:*\n"
+        "🔔 Получите уведомление когда загрузка завершится"
+    )
 
-    await message.answer(help_text)
+    await message.answer(help_text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
 
 @dp.message(Command("list"))
+@dp.message(F.text == "📋 Список торрентов")
 async def cmd_list(message: Message):
     """Команда /list - показать список торрентов"""
     if not check_access(message.from_user.id):
@@ -128,29 +194,32 @@ async def cmd_list(message: Message):
 
         if not torrents:
             empty_message = os.getenv("EMPTY_LIST_MESSAGE", "📭 Список торрентов пуст")
-            await message.answer(empty_message)
+            await message.answer(empty_message, reply_markup=get_main_keyboard())
             return
 
-        list_header = os.getenv("LIST_HEADER", "📋 Активные торренты:")
-        response = f"{list_header}\n\n"
+        list_header = "📋 *Активные торренты:*\n\n"
+        response = list_header
 
         for torrent in torrents[:MAX_TORRENTS_DISPLAY]:
             progress = torrent.progress
             status = get_status_emoji(torrent.status)
             size = format_size(torrent.total_size)
 
-            response += f"{status} {torrent.name}\n"
-            response += f"   Прогресс: {progress:.1f}% | Размер: {size}\n\n"
+            # Экранируем специальные символы для Markdown
+            name = torrent.name.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[')
+
+            response += f"{status} `{name[:50]}{'...' if len(name) > 50 else ''}`\n"
+            response += f"   📊 Прогресс: *{progress:.1f}%* | 📦 Размер: *{size}*\n\n"
 
         if len(torrents) > MAX_TORRENTS_DISPLAY:
-            response += f"... и еще {len(torrents) - MAX_TORRENTS_DISPLAY} торрентов"
+            response += f"\n_... и еще {len(torrents) - MAX_TORRENTS_DISPLAY} торрентов_"
 
-        await message.answer(response)
+        await message.answer(response, reply_markup=get_main_keyboard(), parse_mode="Markdown")
     except Exception as e:
-        error_message = os.getenv("ERROR_MESSAGE", f"{EMOJI_ERROR} Ошибка: {{error}}")
-        await message.answer(error_message.format(error=str(e)))
+        await message.answer(f"{EMOJI_ERROR} Ошибка: {str(e)}", reply_markup=get_main_keyboard())
 
 @dp.message(Command("status"))
+@dp.message(F.text == "📊 Статус")
 async def cmd_status(message: Message):
     """Команда /status - показать статус системы"""
     if not check_access(message.from_user.id):
@@ -169,50 +238,118 @@ async def cmd_status(message: Message):
         upload_speed = sum(t.rate_upload for t in torrents)
 
         response = (
-            f"📊 Статус системы:\n\n"
-            f"🔄 Загружается: {active}\n"
-            f"✅ Раздается: {seeding}\n"
-            f"⏸️ Остановлено: {paused}\n"
-            f"📦 Всего: {total}\n\n"
-            f"⬇️ Скорость загрузки: {format_size(download_speed)}/s\n"
-            f"⬆️ Скорость отдачи: {format_size(upload_speed)}/s\n\n"
-            f"📁 Папка загрузок: {session.download_dir}"
+            "📊 *Статус системы:*\n\n"
+            f"🔄 Загружается: *{active}*\n"
+            f"✅ Раздается: *{seeding}*\n"
+            f"⏸️ Остановлено: *{paused}*\n"
+            f"📦 Всего: *{total}*\n\n"
+            f"⬇️ Скорость загрузки: *{format_size(download_speed)}/s*\n"
+            f"⬆️ Скорость отдачи: *{format_size(upload_speed)}/s*\n\n"
+            f"📁 Папка загрузок: `{session.download_dir}`"
         )
 
-        await message.answer(response)
+        await message.answer(response, reply_markup=get_main_keyboard(), parse_mode="Markdown")
     except Exception as e:
-        error_message = os.getenv("ERROR_MESSAGE", f"{EMOJI_ERROR} Ошибка: {{error}}")
-        await message.answer(error_message.format(error=str(e)))
+        await message.answer(f"{EMOJI_ERROR} Ошибка: {str(e)}", reply_markup=get_main_keyboard())
 
 @dp.message(F.text.startswith("magnet:"))
-async def handle_magnet(message: Message):
+async def handle_magnet(message: Message, state: FSMContext):
     """Обработка magnet-ссылок"""
     if not check_access(message.from_user.id):
         return
 
+    magnet_link = message.text.strip()
+
+    # Сохраняем magnet-ссылку для пользователя
+    user_magnets[message.from_user.id] = magnet_link
+
+    # Отправляем клавиатуру для выбора категории
+    await message.answer(
+        "📂 *Выберите категорию для загрузки:*",
+        reply_markup=get_category_keyboard(),
+        parse_mode="Markdown"
+    )
+
+    # Устанавливаем состояние ожидания выбора категории
+    await state.set_state(TorrentStates.waiting_for_category)
+
+@dp.callback_query(F.data.startswith("category_"))
+async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
+    """Обработка выбора категории"""
+    if not check_access(callback.from_user.id):
+        await callback.answer("⛔ У вас нет доступа")
+        return
+
+    # Получаем выбранную категорию
+    category = callback.data.replace("category_", "")
+
+    # Получаем сохраненную magnet-ссылку
+    magnet_link = user_magnets.get(callback.from_user.id)
+
+    if not magnet_link:
+        await callback.answer("❌ Ошибка: magnet-ссылка не найдена")
+        await callback.message.edit_text("❌ Ошибка: попробуйте отправить magnet-ссылку заново")
+        await state.clear()
+        return
+
     try:
-        magnet_link = message.text.strip()
-        torrent = client.add_torrent(magnet_link)
+        # Получаем базовую папку загрузок
+        session = client.get_session()
+        base_download_dir = session.download_dir
 
-        success_message = os.getenv(
-            "TORRENT_ADDED_MESSAGE",
-            f"{EMOJI_COMPLETED} Торрент добавлен!\n\n"
-            "📝 Название: {name}\n"
-            "📊 ID: {torrent_id}"
+        # Формируем путь с подпапкой
+        download_path = f"{base_download_dir}/{category}"
+
+        # Добавляем торрент с указанием папки
+        torrent = client.add_torrent(magnet_link, download_dir=download_path)
+
+        # Удаляем сохраненную ссылку
+        del user_magnets[callback.from_user.id]
+
+        emoji = {
+            "Movies": "🎬",
+            "Series": "📺",
+            "Music": "🎵",
+            "Other": "📁"
+        }.get(category, "📂")
+
+        success_message = (
+            f"{EMOJI_COMPLETED} *Торрент добавлен!*\n\n"
+            f"📝 Название: `{torrent.name}`\n"
+            f"{emoji} Категория: *{category}*\n"
+            f"📊 ID: `{torrent.id}`\n"
+            f"📁 Папка: `{download_path}`"
         )
 
-        await message.answer(
-            success_message.format(
-                name=torrent.name,
-                torrent_id=torrent.id
-            ).replace("\\n", "\n")
-        )
+        # Удаляем сообщение с кнопками
+        await callback.message.edit_text(success_message, parse_mode="Markdown")
+
+        # Отправляем новое сообщение с главным меню
+        await callback.message.answer("Что дальше?", reply_markup=get_main_keyboard())
+
+        await callback.answer("✅ Торрент добавлен!")
+
     except Exception as e:
-        error_message = os.getenv(
-            "TORRENT_ADD_ERROR_MESSAGE",
-            f"{EMOJI_ERROR} Ошибка при добавлении торрента: {{error}}"
-        )
-        await message.answer(error_message.format(error=str(e)))
+        await callback.message.edit_text(f"{EMOJI_ERROR} Ошибка при добавлении торрента: {str(e)}")
+        await callback.answer("❌ Ошибка")
+
+    # Очищаем состояние
+    await state.clear()
+
+@dp.callback_query(F.data == "cancel")
+async def handle_cancel(callback: CallbackQuery, state: FSMContext):
+    """Обработка отмены"""
+    if not check_access(callback.from_user.id):
+        return
+
+    # Удаляем сохраненную ссылку
+    if callback.from_user.id in user_magnets:
+        del user_magnets[callback.from_user.id]
+
+    await callback.message.edit_text("❌ Отменено")
+    await callback.message.answer("Отправьте новую magnet-ссылку или используйте кнопки", reply_markup=get_main_keyboard())
+    await callback.answer("Отменено")
+    await state.clear()
 
 async def check_completed_torrents():
     """Проверка завершенных торрентов и отправка уведомлений"""
@@ -226,21 +363,20 @@ async def check_completed_torrents():
                 if torrent.progress == 100 and torrent.id not in completed_cache:
                     completed_cache.add(torrent.id)
 
-                    completion_message = os.getenv(
-                        "COMPLETION_MESSAGE",
-                        f"{EMOJI_COMPLETED} Загрузка завершена!\n\n"
-                        "📝 {name}\n"
-                        "📦 Размер: {size}"
+                    completion_message = (
+                        f"{EMOJI_COMPLETED} *Загрузка завершена!*\n\n"
+                        f"📝 {torrent.name}\n"
+                        f"📦 Размер: *{format_size(torrent.total_size)}*"
                     )
-
-                    notification_text = completion_message.format(
-                        name=torrent.name,
-                        size=format_size(torrent.total_size)
-                    ).replace("\\n", "\n")
 
                     for user_id in ALLOWED_USER_IDS:
                         try:
-                            await bot.send_message(user_id, notification_text)
+                            await bot.send_message(
+                                user_id, 
+                                completion_message,
+                                parse_mode="Markdown",
+                                reply_markup=get_main_keyboard()
+                            )
                         except Exception as e:
                             print(f"Ошибка отправки уведомления пользователю {user_id}: {e}")
 
@@ -255,6 +391,7 @@ async def main():
     print(f"📡 Transmission: {TRANSMISSION_HOST}:{TRANSMISSION_PORT}")
     print(f"⏰ Интервал проверки: {CHECK_INTERVAL} сек")
     print(f"👥 Разрешенные пользователи: {ALLOWED_USER_IDS}")
+    print(f"📂 Категории загрузок: {DOWNLOAD_CATEGORIES}")
 
     asyncio.create_task(check_completed_torrents())
     await dp.start_polling(bot)
