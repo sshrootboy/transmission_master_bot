@@ -15,7 +15,7 @@ echo ""
 
 # Создание структуры папок
 echo "📁 Создание структуры папок..."
-mkdir -p transmission downloads watch downloads/complete downloads/incomplete
+mkdir -p transmission downloads transmission/watch downloads/complete downloads/incomplete
 
 # Проверка .env файла
 if [ ! -f .env ]; then
