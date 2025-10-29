@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   transmission:
     image: linuxserver/transmission:latest
@@ -18,32 +16,17 @@ services:
       - "${TRANSMISSION_PEER_PORT:-51413}:51413/udp"
     restart: ${RESTART_POLICY:-unless-stopped}
 
-  telegram-bot:
+  transmission_bot:
     build: ./bot
-    container_name: telegram-bot
+    container_name: transmission_bot
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
       - ALLOWED_USER_IDS=${ALLOWED_USER_IDS}
       - TRANSMISSION_HOST=${TRANSMISSION_HOST:-transmission}
       - TRANSMISSION_PORT=${TRANSMISSION_PORT:-9091}
-      - TRANSMISSION_USER=${TRANSMISSION_USER}
-      - TRANSMISSION_PASS=${TRANSMISSION_PASS}
       - CHECK_INTERVAL=${CHECK_INTERVAL:-60}
       - MAX_TORRENTS_DISPLAY=${MAX_TORRENTS_DISPLAY:-10}
       - TZ=${TZ:-Europe/Moscow}
-      - EMOJI_DOWNLOADING=${EMOJI_DOWNLOADING:-⬇️}
-      - EMOJI_SEEDING=${EMOJI_SEEDING:-✅}
-      - EMOJI_PAUSED=${EMOJI_PAUSED:-⏸️}
-      - EMOJI_ERROR=${EMOJI_ERROR:-❌}
-      - EMOJI_COMPLETED=${EMOJI_COMPLETED:-🎉}
-      - WELCOME_MESSAGE=${WELCOME_MESSAGE}
-      - HELP_MESSAGE=${HELP_MESSAGE}
-      - EMPTY_LIST_MESSAGE=${EMPTY_LIST_MESSAGE}
-      - LIST_HEADER=${LIST_HEADER}
-      - ERROR_MESSAGE=${ERROR_MESSAGE}
-      - TORRENT_ADDED_MESSAGE=${TORRENT_ADDED_MESSAGE}
-      - TORRENT_ADD_ERROR_MESSAGE=${TORRENT_ADD_ERROR_MESSAGE}
-      - COMPLETION_MESSAGE=${COMPLETION_MESSAGE}
     depends_on:
       - transmission
     restart: ${RESTART_POLICY:-unless-stopped}

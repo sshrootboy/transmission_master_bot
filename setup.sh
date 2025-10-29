@@ -10,17 +10,12 @@ if ! command -v docker &> /dev/null; then
     exit 1
 fi
 
-if ! command -v docker-compose &> /dev/null; then
-    echo "❌ Docker Compose не установлен."
-    exit 1
-fi
-
-echo "✅ Docker и Docker Compose установлены"
+echo "✅ Docker установлен"
 echo ""
 
 # Создание структуры папок
 echo "📁 Создание структуры папок..."
-mkdir -p bot transmission downloads watch
+mkdir -p transmission downloads watch downloads/complete downloads/incomplete
 
 # Проверка .env файла
 if [ ! -f .env ]; then
@@ -83,13 +78,13 @@ fi
 
 echo ""
 echo "🐳 Запуск Docker Compose..."
-docker-compose up -d --build
+docker compose up -d --build
 
 echo ""
 echo "✅ Система запущена!"
 echo ""
 echo "📊 Проверить статус: docker-compose ps"
-echo "📜 Просмотр логов: docker-compose logs -f telegram-bot"
+echo "📜 Просмотр логов: docker-compose logs -f transmission_bot"
 echo "🌐 Веб-интерфейс Transmission: http://localhost:9091"
 echo ""
 echo "🤖 Откройте вашего бота в Telegram и отправьте /start"
