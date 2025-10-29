@@ -1,0 +1,32 @@
+services:
+  transmission:
+    image: linuxserver/transmission:latest
+    container_name: transmission
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-Europe/Moscow}
+    volumes:
+      - ${TRANSMISSION_CONFIG_PATH:-./transmission/config}:/config
+      - ${TRANSMISSION_DOWNLOADS_PATH:-./downloads}:/downloads
+      - ${TRANSMISSION_WATCH_PATH:-./watch}:/watch
+    ports:
+      - "${TRANSMISSION_WEB_PORT:-9091}:9091"
+      - "${TRANSMISSION_PEER_PORT:-51413}:51413"
+      - "${TRANSMISSION_PEER_PORT:-51413}:51413/udp"
+    restart: ${RESTART_POLICY:-unless-stopped}
+
+  transmission_bot:
+    build: ./bot
+    container_name: transmission_bot
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ALLOWED_USER_IDS=${ALLOWED_USER_IDS}
+      - TRANSMISSION_HOST=${TRANSMISSION_HOST:-transmission}
+      - TRANSMISSION_PORT=${TRANSMISSION_PORT:-9091}
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-60}
+      - MAX_TORRENTS_DISPLAY=${MAX_TORRENTS_DISPLAY:-10}
+      - TZ=${TZ:-Europe/Moscow}
+    depends_on:
+      - transmission
+    restart: ${RESTART_POLICY:-unless-stopped}
