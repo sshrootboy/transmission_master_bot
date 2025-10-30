@@ -8,8 +8,12 @@ services:
       - TZ=${TZ:-Europe/Moscow}
     volumes:
       - ${TRANSMISSION_CONFIG_PATH:-./transmission/config}:/config
-      - ${TRANSMISSION_DOWNLOADS_PATH:-./downloads}:/downloads
-      - ${TRANSMISSION_WATCH_PATH:-./watch}:/watch
+      - ${TRANSMISSION_WATCH_PATH:-./transmission/watch}:/watch
+      - ${TRANSMISSION_INCOMPLETE_PATH:-./transmission/incomplete}:/downloads/incomplete
+      - ${TRANSMISSION_SERIES_PATH:-./transmission/Series}:/downloads/complete/Series
+      - ${TRANSMISSION_MOVIES_PATH:-./transmission/Movies}:/downloads/complete/Movies
+      - ${TRANSMISSION_OTHER_PATH:-./transmission/Other}:/downloads/complete/Other
+      - ${TRANSMISSION_MUSIC_PATH:-./transmission/Music}:/downloads/complete/Music
     ports:
       - "${TRANSMISSION_WEB_PORT:-9091}:9091"
       - "${TRANSMISSION_PEER_PORT:-51413}:51413"
