@@ -18,6 +18,12 @@ services:
       - "${TRANSMISSION_WEB_PORT:-9091}:9091"
       - "${TRANSMISSION_PEER_PORT:-51413}:51413"
       - "${TRANSMISSION_PEER_PORT:-51413}:51413/udp"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://localhost:9091/transmission/rpc | grep -qE '^(200|409)$'"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
     restart: ${RESTART_POLICY:-unless-stopped}
 
   transmission_bot:
@@ -32,5 +38,6 @@ services:
       - MAX_TORRENTS_DISPLAY=${MAX_TORRENTS_DISPLAY:-10}
       - TZ=${TZ:-Europe/Moscow}
     depends_on:
-      - transmission
+      transmission:
+        condition: service_healthy
     restart: ${RESTART_POLICY:-unless-stopped}

@@ -117,6 +117,16 @@ def get_status_priority(torrent) -> tuple:
     # Сортируем по приоритету, потом по ID (обратный порядок - новые сверху)
     return (priority, -torrent.id)
 
+# Подсчет статусов торрентов
+def get_status_counts(torrents):
+    """Подсчет статусов торрентов"""
+    active = sum(1 for t in torrents if t.status == "downloading")
+    seeding = sum(1 for t in torrents if t.status == "seeding")
+    paused = sum(1 for t in torrents if t.status == "stopped")
+    errors = sum(1 for t in torrents if t.error != 0)
+    total = len(torrents)
+    return active, seeding, paused, errors, total
+
 # Сортировка торрентов
 def sort_torrents(torrents):
     """Сортировка: загружающиеся -> с ошибками -> готовые -> остальные"""
@@ -349,11 +359,7 @@ async def cmd_status(message: Message):
         session = client.get_session()
         torrents = client.get_torrents()
 
-        active = sum(1 for t in torrents if t.status == "downloading")
-        seeding = sum(1 for t in torrents if t.status == "seeding")
-        paused = sum(1 for t in torrents if t.status == "stopped")
-        errors = sum(1 for t in torrents if t.error != 0)
-        total = len(torrents)
+        active, seeding, paused, errors, total = get_status_counts(torrents)
 
         download_speed = sum(t.rate_download for t in torrents)
         upload_speed = sum(t.rate_upload for t in torrents)
@@ -600,31 +606,36 @@ async def handle_cancel(callback: CallbackQuery, state: FSMContext):
 async def check_completed_torrents():
     """Проверка завершенных торрентов и отправка уведомлений"""
     completed_cache = set()
+    initialized = False
 
     while True:
         try:
             torrents = client.get_torrents()
 
-            for torrent in torrents:
-                if torrent.progress == 100 and torrent.id not in completed_cache:
-                    completed_cache.add(torrent.id)
+            if not initialized:
+                completed_cache = {t.id for t in torrents if t.progress == 100}
+                initialized = True
+            else:
+                for torrent in torrents:
+                    if torrent.progress == 100 and torrent.id not in completed_cache:
+                        completed_cache.add(torrent.id)
 
-                    completion_message = (
-                        f"{EMOJI_COMPLETED} *Загрузка завершена!*\n\n"
-                        f"📝 {torrent.name}\n"
-                        f"📦 Размер: *{format_size(torrent.total_size)}*"
-                    )
+                        completion_message = (
+                            f"{EMOJI_COMPLETED} *Загрузка завершена!*\n\n"
+                            f"📝 {torrent.name}\n"
+                            f"📦 Размер: *{format_size(torrent.total_size)}*"
+                        )
 
-                    for user_id in ALLOWED_USER_IDS:
-                        try:
-                            await bot.send_message(
-                                user_id, 
-                                completion_message,
-                                parse_mode="Markdown",
-                                reply_markup=get_main_keyboard()
-                            )
-                        except Exception as e:
-                            print(f"Ошибка отправки уведомления пользователю {user_id}: {e}")
+                        for user_id in ALLOWED_USER_IDS:
+                            try:
+                                await bot.send_message(
+                                    user_id,
+                                    completion_message,
+                                    parse_mode="Markdown",
+                                    reply_markup=get_main_keyboard()
+                                )
+                            except Exception as e:
+                                print(f"Ошибка отправки уведомления пользователю {user_id}: {e}")
 
         except Exception as e:
             print(f"Ошибка проверки торрентов: {e}")
@@ -638,6 +649,36 @@ async def main():
     print(f"⏰ Интервал проверки: {CHECK_INTERVAL} сек")
     print(f"👥 Разрешенные пользователи: {ALLOWED_USER_IDS}")
     print(f"📂 Категории загрузок: {DOWNLOAD_CATEGORIES}")
+
+    if ALLOWED_USER_IDS:
+        try:
+            torrents = client.get_torrents()
+            active, seeding, paused, errors, total = get_status_counts(torrents)
+
+            startup_message = (
+                "✅ *Transmission Master Bot запущен*\n\n"
+                f"🔄 Загружается: *{active}*\n"
+                f"✅ Раздается: *{seeding}*\n"
+                f"⏸️ Остановлено: *{paused}*\n"
+            )
+
+            if errors > 0:
+                startup_message += f"❌ С ошибками: *{errors}*\n"
+
+            startup_message += f"📦 Всего: *{total}*"
+
+            for user_id in ALLOWED_USER_IDS:
+                try:
+                    await bot.send_message(
+                        user_id,
+                        startup_message,
+                        parse_mode="Markdown",
+                        reply_markup=get_main_keyboard()
+                    )
+                except Exception as e:
+                    print(f"Ошибка отправки старта пользователю {user_id}: {e}")
+        except Exception as e:
+            print(f"Ошибка отправки статуса при старте: {e}")
 
     asyncio.create_task(check_completed_torrents())
     await dp.start_polling(bot)
