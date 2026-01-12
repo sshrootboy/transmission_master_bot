@@ -451,7 +451,6 @@ async def cmd_status(message: Message):
             f"📦 Всего: *{total}*\n\n"
             f"⬇️ Скорость загрузки: *{format_size(download_speed)}/s*\n"
             f"⬆️ Скорость отдачи: *{format_size(upload_speed)}/s*\n\n"
-            f"📁 Папка загрузок: `{session.download_dir}`"
         )
 
         await message.answer(response, reply_markup=get_main_keyboard(), parse_mode="Markdown")
