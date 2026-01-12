@@ -1,5 +1,6 @@
 import asyncio
 import os
+import tempfile
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
@@ -50,10 +51,23 @@ class TorrentStates(StatesGroup):
     selecting_torrent_to_delete = State()
     confirming_deletion = State()
 
-# Временное хранилище для magnet-ссылок и выбранных торрентов
+# Временное хранилище для magnet-ссылок, .torrent файлов и выбранных торрентов
 user_magnets = {}
+user_torrent_files = {}
 user_selected_torrents = {}
 delete_page = {}
+
+def cleanup_user_torrent_file(user_id: int) -> None:
+    """Удаляет временный .torrent файл пользователя"""
+    torrent_path = user_torrent_files.pop(user_id, None)
+    if not torrent_path:
+        return
+    try:
+        os.remove(torrent_path)
+    except FileNotFoundError:
+        return
+    except Exception as e:
+        print(f"Ошибка при удалении временного .torrent файла: {e}")
 
 # Подключение к Transmission
 def get_transmission_client():
@@ -151,7 +165,7 @@ def get_main_keyboard():
             ]
         ],
         resize_keyboard=True,
-        input_field_placeholder="Отправьте magnet-ссылку или выберите действие"
+        input_field_placeholder="Отправьте magnet-ссылку или .torrent файл"
     )
     return keyboard
 
@@ -266,7 +280,7 @@ async def cmd_start(message: Message):
 
     welcome_text = (
         "🤖 *Transmission Master Bot*\n\n"
-        "📥 Отправьте magnet-ссылку для добавления торрента\n"
+        "📥 Отправьте magnet-ссылку или .torrent файл для добавления торрента\n"
         "📋 Используйте кнопки ниже для управления\n\n"
         "*Доступные команды:*\n"
         "📋 Список торрентов\n"
@@ -287,7 +301,7 @@ async def cmd_help(message: Message):
     help_text = (
         "📖 *Transmission Master Bot - Руководство*\n\n"
         "*Добавление торрента:*\n"
-        "1️⃣ Отправьте magnet-ссылку\n"
+        "1️⃣ Отправьте magnet-ссылку или .torrent файл\n"
         "2️⃣ Выберите категорию (Movies, Series, Music, Other)\n"
         "3️⃣ Торрент начнет загружаться\n\n"
         "*Управление:*\n"
@@ -528,6 +542,7 @@ async def handle_magnet(message: Message, state: FSMContext):
     if not check_access(message.from_user.id):
         return
 
+    cleanup_user_torrent_file(message.from_user.id)
     magnet_link = message.text.strip()
     user_magnets[message.from_user.id] = magnet_link
 
@@ -539,6 +554,53 @@ async def handle_magnet(message: Message, state: FSMContext):
 
     await state.set_state(TorrentStates.waiting_for_category)
 
+@dp.message(F.document)
+async def handle_torrent_file(message: Message, state: FSMContext):
+    """Обработка .torrent файлов"""
+    if not check_access(message.from_user.id):
+        return
+
+    document = message.document
+    file_name = (document.file_name or "").lower()
+
+    if not file_name.endswith(".torrent"):
+        await message.answer("❌ Пожалуйста, отправьте файл с расширением .torrent.", reply_markup=get_main_keyboard())
+        return
+
+    if message.from_user.id in user_magnets:
+        del user_magnets[message.from_user.id]
+    cleanup_user_torrent_file(message.from_user.id)
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="tmbot_", suffix=".torrent", delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+
+        download = getattr(bot, "download", None)
+        if download:
+            await download(document, destination=tmp_path)
+        else:
+            file = await bot.get_file(document.file_id)
+            await bot.download_file(file.file_path, destination=tmp_path)
+
+        if not os.path.exists(tmp_path) or os.path.getsize(tmp_path) == 0:
+            raise ValueError("Файл .torrent пуст или не был загружен")
+
+        user_torrent_files[message.from_user.id] = tmp_path
+
+        await message.answer(
+            "📂 *Выберите категорию для загрузки:*",
+            reply_markup=get_category_keyboard(),
+            parse_mode="Markdown"
+        )
+
+        await state.set_state(TorrentStates.waiting_for_category)
+    except Exception as e:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        await message.answer(f"{EMOJI_ERROR} Ошибка при загрузке .torrent файла: {str(e)}", reply_markup=get_main_keyboard())
+        await state.clear()
+
 @dp.callback_query(F.data.startswith("category_"))
 async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
     """Обработка выбора категории"""
@@ -546,13 +608,16 @@ async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
         await callback.answer("⛔ У вас нет доступа")
         return
 
+    magnet_link = None
+    torrent_file = None
     try:
         category = callback.data.replace("category_", "")
         magnet_link = user_magnets.get(callback.from_user.id)
+        torrent_file = user_torrent_files.get(callback.from_user.id)
 
-        if not magnet_link:
-            await callback.answer("❌ Ошибка: magnet-ссылка не найдена")
-            await callback.message.edit_text("❌ Ошибка: попробуйте отправить magnet-ссылку заново")
+        if not magnet_link and not torrent_file:
+            await callback.answer("❌ Ошибка: файл или ссылка не найдены")
+            await callback.message.edit_text("❌ Ошибка: попробуйте отправить magnet-ссылку или .torrent файл заново")
             await state.clear()
             return
 
@@ -560,9 +625,16 @@ async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
         base_download_dir = session.download_dir
         download_path = f"{base_download_dir}/{category}"
 
-        torrent = client.add_torrent(magnet_link, download_dir=download_path)
-
-        del user_magnets[callback.from_user.id]
+        if magnet_link:
+            torrent = client.add_torrent(magnet_link, download_dir=download_path)
+            del user_magnets[callback.from_user.id]
+        else:
+            with open(torrent_file, "rb") as f:
+                torrent_data = f.read()
+            if not torrent_data:
+                raise ValueError("Файл .torrent пуст")
+            torrent = client.add_torrent(torrent_data, download_dir=download_path)
+            cleanup_user_torrent_file(callback.from_user.id)
 
         emoji = {
             "Movies": "🎬",
@@ -584,6 +656,8 @@ async def handle_category_selection(callback: CallbackQuery, state: FSMContext):
         await callback.answer("✅ Торрент добавлен!")
 
     except Exception as e:
+        if torrent_file:
+            cleanup_user_torrent_file(callback.from_user.id)
         await callback.message.edit_text(f"{EMOJI_ERROR} Ошибка при добавлении торрента: {str(e)}")
         await callback.answer("❌ Ошибка")
 
@@ -597,9 +671,10 @@ async def handle_cancel(callback: CallbackQuery, state: FSMContext):
 
     if callback.from_user.id in user_magnets:
         del user_magnets[callback.from_user.id]
+    cleanup_user_torrent_file(callback.from_user.id)
 
     await callback.message.edit_text("❌ Отменено")
-    await callback.message.answer("Отправьте новую magnet-ссылку или используйте кнопки", reply_markup=get_main_keyboard())
+    await callback.message.answer("Отправьте новую magnet-ссылку или .torrent файл", reply_markup=get_main_keyboard())
     await callback.answer("Отменено")
     await state.clear()
 
