@@ -97,6 +97,18 @@ def format_size(size_bytes: int) -> str:
         size_bytes /= 1024.0
     return f"{size_bytes:.2f} PB"
 
+# Экранирование текста для Markdown
+def escape_markdown(text: str) -> str:
+    """Экранирование спецсимволов Markdown"""
+    if text is None:
+        return ""
+    return (
+        text.replace('_', '\\_')
+        .replace('*', '\\*')
+        .replace('[', '\\[')
+        .replace('`', '\\`')
+    )
+
 # Получение emoji для статуса
 def get_status_emoji(status: str) -> str:
     """Получение emoji в зависимости от статуса торрента"""
@@ -149,6 +161,35 @@ def sort_torrents(torrents):
     except Exception as e:
         print(f"Ошибка при сортировке торрентов: {e}")
         return torrents
+
+# Пагинация торрентов
+def paginate_torrents(torrents, page=0, per_page=9):
+    """Выборка торрентов по странице"""
+    total = len(torrents)
+    start_idx = page * per_page
+    end_idx = start_idx + per_page
+    page_torrents = torrents[start_idx:end_idx]
+    return page_torrents, total, start_idx, end_idx
+
+def get_pagination_buttons(page, total, per_page, prefix):
+    """Кнопки навигации по страницам"""
+    start_idx = page * per_page
+    end_idx = start_idx + per_page
+    buttons = []
+
+    if page > 0:
+        buttons.append(InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data=f"{prefix}{page-1}"
+        ))
+
+    if end_idx < total:
+        buttons.append(InlineKeyboardButton(
+            text="➡️ Далее",
+            callback_data=f"{prefix}{page+1}"
+        ))
+
+    return buttons
 
 # Создание главной клавиатуры с кнопками
 def get_main_keyboard():
@@ -203,9 +244,7 @@ def get_torrents_keyboard(page=0, per_page=9):
         torrents = client.get_torrents()
         torrents = sort_torrents(torrents)
 
-        start_idx = page * per_page
-        end_idx = start_idx + per_page
-        page_torrents = torrents[start_idx:end_idx]
+        page_torrents, total, _, _ = paginate_torrents(torrents, page=page, per_page=per_page)
 
         buttons = []
 
@@ -220,18 +259,7 @@ def get_torrents_keyboard(page=0, per_page=9):
             )])
 
         # Навигация
-        nav_buttons = []
-        if page > 0:
-            nav_buttons.append(InlineKeyboardButton(
-                text="⬅️ Назад",
-                callback_data=f"delete_page_{page-1}"
-            ))
-
-        if end_idx < len(torrents):
-            nav_buttons.append(InlineKeyboardButton(
-                text="➡️ Далее",
-                callback_data=f"delete_page_{page+1}"
-            ))
+        nav_buttons = get_pagination_buttons(page, total, per_page, "delete_page_")
 
         if nav_buttons:
             buttons.append(nav_buttons)
@@ -240,11 +268,48 @@ def get_torrents_keyboard(page=0, per_page=9):
         buttons.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")])
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
-        return keyboard, len(torrents)
+        return keyboard, total
 
     except Exception as e:
         print(f"Ошибка при получении списка торрентов: {e}")
         return None, 0
+
+# Формирование страницы списка торрентов с пагинацией
+def get_torrents_list_page(page=0, per_page=MAX_TORRENTS_DISPLAY):
+    """Текст списка торрентов и inline-клавиатура для навигации"""
+    torrents = client.get_torrents()
+    if not torrents:
+        return None, None
+
+    torrents = sort_torrents(torrents)
+    total = len(torrents)
+    max_page = max(0, (total - 1) // per_page)
+    page = min(max(page, 0), max_page)
+
+    page_torrents, _, _, _ = paginate_torrents(torrents, page=page, per_page=per_page)
+    total_pages = max_page + 1
+
+    response = f"📋 *Активные торренты* (страница {page + 1} из {total_pages}):\n\n"
+
+    for torrent in page_torrents:
+        progress = torrent.progress
+        status = get_status_emoji(torrent.status)
+        size = format_size(torrent.total_size)
+
+        name = escape_markdown(torrent.name)
+        name = name[:50] + '...' if len(name) > 50 else name
+
+        error_text = ""
+        if hasattr(torrent, 'error_string') and torrent.error_string:
+            error_text = f"\n   ⚠️ Ошибка: {escape_markdown(torrent.error_string)}"
+
+        response += f"{status} `{name}`\n"
+        response += f"   📊 Прогресс: *{progress:.1f}%* | 📦 Размер: *{size}*{error_text}\n\n"
+
+    nav_buttons = get_pagination_buttons(page, total, per_page, "list_page_")
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[nav_buttons]) if nav_buttons else None
+
+    return response, keyboard
 
 # Клавиатура подтверждения удаления
 def get_delete_confirmation_keyboard(torrent_id):
@@ -325,42 +390,36 @@ async def cmd_list(message: Message):
         return
 
     try:
-        torrents = client.get_torrents()
+        response, keyboard = get_torrents_list_page(page=0, per_page=MAX_TORRENTS_DISPLAY)
 
-        if not torrents:
+        if response is None:
             empty_message = os.getenv("EMPTY_LIST_MESSAGE", "📭 Список торрентов пуст")
             await message.answer(empty_message, reply_markup=get_main_keyboard())
             return
 
-        # Сортируем торренты
-        sorted_torrents = sort_torrents(torrents)
-
-        list_header = "📋 *Активные торренты:*\n\n"
-        response = list_header
-
-        for torrent in sorted_torrents[:MAX_TORRENTS_DISPLAY]:
-            progress = torrent.progress
-            status = get_status_emoji(torrent.status)
-            size = format_size(torrent.total_size)
-
-            # Экранируем специальные символы для Markdown
-            name = torrent.name.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
-            name = name[:50] + '...' if len(name) > 50 else name
-
-            # Показываем ошибку если есть
-            error_text = ""
-            if hasattr(torrent, 'error_string') and torrent.error_string:
-                error_text = f"\n   ⚠️ Ошибка: {torrent.error_string}"
-
-            response += f"{status} `{name}`\n"
-            response += f"   📊 Прогресс: *{progress:.1f}%* | 📦 Размер: *{size}*{error_text}\n\n"
-
-        if len(sorted_torrents) > MAX_TORRENTS_DISPLAY:
-            response += f"\n_... и еще {len(sorted_torrents) - MAX_TORRENTS_DISPLAY} торрентов_"
-
-        await message.answer(response, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+        await message.answer(response, reply_markup=keyboard, parse_mode="Markdown")
     except Exception as e:
         await message.answer(f"{EMOJI_ERROR} Ошибка: {str(e)}", reply_markup=get_main_keyboard())
+
+@dp.callback_query(F.data.startswith("list_page_"))
+async def handle_list_page(callback: CallbackQuery):
+    """Пагинация списка торрентов"""
+    if not check_access(callback.from_user.id):
+        return
+
+    try:
+        page = int(callback.data.replace("list_page_", ""))
+        response, keyboard = get_torrents_list_page(page=page, per_page=MAX_TORRENTS_DISPLAY)
+
+        if response is None:
+            await callback.message.edit_text("📭 Список торрентов пуст")
+            await callback.answer()
+            return
+
+        await callback.message.edit_text(response, reply_markup=keyboard, parse_mode="Markdown")
+        await callback.answer()
+    except Exception as e:
+        await callback.answer(f"❌ Ошибка: {str(e)}", show_alert=True)
 
 @dp.message(Command("status"))
 @dp.message(F.text == "📊 Статус")
