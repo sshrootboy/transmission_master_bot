@@ -775,6 +775,20 @@ async def check_completed_torrents():
 
         await asyncio.sleep(CHECK_INTERVAL)
 
+async def wait_for_rpc():
+    """Ожидание доступности Transmission RPC"""
+    attempt = 0
+    while True:
+        try:
+            client.get_session()
+            print("✅ Transmission RPC доступен")
+            return
+        except Exception as e:
+            attempt += 1
+            if attempt == 1 or attempt % 5 == 0:
+                print(f"⏳ Ожидание Transmission RPC (попытка {attempt}): {e}")
+            await asyncio.sleep(2)
+
 async def main():
     """Главная функция запуска бота"""
     print(f"🚀 Запуск Transmission Master Bot...")
@@ -782,6 +796,8 @@ async def main():
     print(f"⏰ Интервал проверки: {CHECK_INTERVAL} сек")
     print(f"👥 Разрешенные пользователи: {ALLOWED_USER_IDS}")
     print(f"📂 Категории загрузок: {DOWNLOAD_CATEGORIES}")
+
+    await wait_for_rpc()
 
     if ALLOWED_USER_IDS:
         try:
