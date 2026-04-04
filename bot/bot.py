@@ -1,7 +1,9 @@
 import asyncio
 import os
 import tempfile
+from urllib.parse import urlsplit
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -16,6 +18,7 @@ load_dotenv()
 # Конфигурация бота
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ALLOWED_USER_IDS = [int(id.strip()) for id in os.getenv("ALLOWED_USER_IDS", "").split(",") if id.strip()]
+TELEGRAM_PROXY_URL = os.getenv("TELEGRAM_PROXY_URL") or os.getenv("TELEGRAM_SOCKS5_PROXY")
 
 # Конфигурация Transmission
 TRANSMISSION_HOST = os.getenv("TRANSMISSION_HOST", "transmission")
@@ -40,8 +43,27 @@ EMOJI_COMPLETED = os.getenv("EMOJI_COMPLETED", "🎉")
 # Категории для загрузки
 DOWNLOAD_CATEGORIES = os.getenv("DOWNLOAD_CATEGORIES", "Movies,Series,Music,Other").split(",")
 
+def format_proxy_for_log(proxy_url: str) -> str:
+    """Возвращает безопасное представление proxy для логов"""
+    try:
+        parsed = urlsplit(proxy_url)
+        if not parsed.scheme or not parsed.hostname:
+            return "configured"
+        auth = "***@" if parsed.username else ""
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"{parsed.scheme}://{auth}{parsed.hostname}{port}"
+    except Exception:
+        return "configured"
+
+def create_bot() -> Bot:
+    """Создание Telegram-бота с optional proxy"""
+    if TELEGRAM_PROXY_URL:
+        session = AiohttpSession(proxy=TELEGRAM_PROXY_URL)
+        return Bot(token=BOT_TOKEN, session=session)
+    return Bot(token=BOT_TOKEN)
+
 # Инициализация бота и диспетчера
-bot = Bot(token=BOT_TOKEN)
+bot = create_bot()
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
@@ -793,6 +815,8 @@ async def main():
     """Главная функция запуска бота"""
     print(f"🚀 Запуск Transmission Master Bot...")
     print(f"📡 Transmission: {TRANSMISSION_HOST}:{TRANSMISSION_PORT}")
+    if TELEGRAM_PROXY_URL:
+        print(f"🌐 Telegram proxy: {format_proxy_for_log(TELEGRAM_PROXY_URL)}")
     print(f"⏰ Интервал проверки: {CHECK_INTERVAL} сек")
     print(f"👥 Разрешенные пользователи: {ALLOWED_USER_IDS}")
     print(f"📂 Категории загрузок: {DOWNLOAD_CATEGORIES}")
