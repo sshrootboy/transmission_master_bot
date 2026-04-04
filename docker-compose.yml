@@ -15,7 +15,7 @@ services:
       - ${TRANSMISSION_OTHER_PATH:-./transmission/Other}:/downloads/complete/Other
       - ${TRANSMISSION_MUSIC_PATH:-./transmission/Music}:/downloads/complete/Music
     ports:
-      - "${TRANSMISSION_WEB_PORT:-9091}:9091"
+      - "${TRANSMISSION_PORT:-9091}:9091"
       - "${TRANSMISSION_PEER_PORT:-51413}:51413"
       - "${TRANSMISSION_PEER_PORT:-51413}:51413/udp"
     healthcheck:
